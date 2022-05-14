@@ -1,0 +1,397 @@
+---
+title: "Powerlifting Strength Comparison"
+author: "Flash"
+date: "12/05/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=5, fig.height=3.33)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+## Data Prep for males >=20y
+
+```{r}
+data <- read.csv("openpowerlifting.csv", header=TRUE)
+```
+
+
+```{r}
+d2 <- data[(data$Sex=="M")&(data$Equipment=="Raw")
+           &(data$Event=="SBD")&(data$Age>=20),]
+rm("data")
+```
+
+
+```{r}
+d2 <- d2[!is.na(d2$Best3BenchKg),]
+d2 <- d2[!is.na(d2$Best3SquatKg),]
+d2 <- d2[!is.na(d2$Best3DeadliftKg),]
+d2 <- d2[!is.na(d2$TotalKg),]
+d2 <- d2[!is.na(d2$BodyweightKg),]
+d2 <- d2[(d2$Best3BenchKg>0)&(d2$Best3DeadliftKg>0)
+         &(d2$Best3SquatKg>0)&(d2$TotalKg>0),]
+```
+
+
+```{r}
+d2$logBW <- log(d2$BodyweightKg)
+d2$logBench <- log(d2$Best3BenchKg)
+d2$logSquat <- log(d2$Best3SquatKg)
+d2$logTotal <- log(d2$TotalKg)
+d2$logDead <- log(d2$Best3DeadliftKg)
+```
+
+```{r}
+nrow(d2)
+```
+
+```{r}
+d2 <- d2[!duplicated(d2[,c('Name')]),]
+nrow(d2)
+```
+
+```{r}
+d2$Rel_Total <- d2$TotalKg / d2$BodyweightKg
+```
+
+```{r}
+indices = sort(sample(nrow(d2), nrow(d2)*.8))
+d2_train <- d2[indices,]
+d2_test <- d2[-indices,]
+```
+
+
+
+```{r}
+library(rethinking)
+```
+```{r}
+library(MASS)
+```
+
+```{r}
+library(entropy)
+```
+
+
+### Coloured Density Curves
+
+If the density curves moves as the colour changes, that means there are different distributions of the score as the bodyweight changes. In other words, it isn't a fair score.
+
+```{r}
+ColouredDensities <- function(score,bw){
+  Weight_classes <- seq(55,135,by=5)
+  color_vector <- hsv(seq(5/6,0,length.out=length(Weight_classes-1)),1,1)
+  curve(dnorm(x,mean=mean(score),sd=sd(score)),xlim=c(-5,5),ylim=c(0,.5))
+  
+  for(i in 2:length(Weight_classes)){
+    lines(density(score[exp(bw)>Weight_classes[i-1] 
+                        & exp(bw)<Weight_classes[i]]),col = color_vector[i-1])
+  }
+  
+}
+```
+
+
+### Wandering Schematic Plot
+
+[whuber](https://stats.stackexchange.com/users/919/whuber), Measures of residuals heteroscedasticity, URL (version: 2021-06-09): https://stats.stackexchange.com/q/33033
+
+```{r}
+WanderingSchematic <- function(n_bins,score,bw,title,yax_lab){
+  n.bins <- n_bins
+  bins <- cut(bw, quantile(bw, 
+                    probs = seq(0, 1, 1/n.bins)))
+  b <- boxplot(score ~ bins, boxwex=1/2, 
+               main=title,
+               xlab="Bodyweight", ylab=yax_lab,ylim=c(-5,5))
+  colors <- hsv(seq(2/6, 1, 1/6))
+  temp <- sapply(1:5, function(i) lines(lowess(1:n.bins, 
+                     b$stats[i,], f=.25), 
+        col=colors[i], lwd=2))
+  abline(0.674,0)
+  abline(-0.674,0)
+}
+
+
+```
+
+
+
+
+# Relative Bodyweight
+
+
+
+```{r}
+Relative_model <- quap(
+  alist(
+    Rel_Total ~ dnorm( mu , sigma ) ,
+    mu <- dnorm( 1.5 , 1 ) ,
+    sigma ~ dexp( 0.1 )
+    
+  ) , data=d2_train )
+precis(Relative_model)
+```
+
+```{r}
+post <- extract.samples( Relative_model )
+map_mu <- mean(post$mu)
+map_sigma <- mean(post$sigma)
+plot(density(d2_test$Rel_Total))
+curve(dnorm(x,map_mu,map_sigma),add=TRUE)
+```
+
+## Normalize to Z Score
+
+```{r}
+d2_test$Rel_Total <- ( d2_test$Rel_Total - map_mu) / map_sigma
+plot(density(d2_test$Rel_Total))
+curve(dnorm(x,0,1),add=TRUE)
+```
+
+
+# Log Log / Allometric model
+
+
+$$\ln(y) = \alpha + \beta\ln(x)$$
+
+$$ y = e^{\alpha + \beta\ln(x)}$$
+
+$$ y = e^{\alpha}e^{\beta\ln(x)}$$
+$$ y = e^{\alpha}x^{\beta}$$
+
+Hence, the log transform of both variables is known as power law or allometric scaling
+
+```{r}
+xbar <- mean(d2_train$logTotal)
+loglogTotal_model <- quap(
+  alist(
+    logTotal ~ dnorm( mu , sigma ) ,
+    mu <- a + b*( logBW - xbar ) ,
+    a <- dnorm( 7 , 0.5) ,
+    b <- dexp( 2 ) ,
+    sigma ~ dexp( 3 )
+    
+  ) , data=d2_train )
+precis(loglogTotal_model)
+```
+
+```{r}
+xbar <- mean(d2_train$logTotal)
+post <- extract.samples( loglogTotal_model )
+map_a <- mean(post$a)
+map_b <- mean(post$b)
+map_sigma <- mean(post$sigma)
+map_means <- map_a + (map_b * (d2_test$logBW - xbar) )
+
+
+```
+## Normalize to Z Score
+
+```{r}
+d2_test$LogLogScore <- ( d2_test$logTotal - map_means ) / map_sigma
+```
+
+```{r}
+plot(density(d2_test$LogLogScore))
+curve(dnorm(x,0,1),add=TRUE)
+```
+
+
+# Varying Variance Model
+
+```{r}
+xbar <- mean(d2_train$BodyweightKg)
+
+varying_variance <- quap(
+  alist(
+    TotalKg ~ dnorm( mu , sigma ) ,
+    mu <- a + b*( BodyweightKg - xbar ) ,
+    a ~ dnorm( 500 , 40 ) ,
+    b ~ dnorm( 3, 2 ) ,
+    sigma <- d + c*(BodyweightKg - xbar) ,
+    d ~ dnorm( 80, 5 ) ,
+    c ~ dexp( 2 )
+    
+  ) , data=d2_train )
+precis(varying_variance)
+```
+
+
+```{r}
+xbar <- mean(d2_train$BodyweightKg)
+post <- extract.samples( varying_variance )
+map_a <- mean(post$a)
+map_b <- mean(post$b)
+map_c <- mean(post$c)
+map_d <- mean(post$d)
+map_sigmas <- map_d + (map_c * ( d2_test$BodyweightKg - xbar) )
+map_means <- map_a + (map_b * ( d2_test$BodyweightKg - xbar) )
+```
+## Normalize to Z Score
+
+```{r}
+d2_test$VVScore <- ( d2_test$TotalKg - map_means ) / (map_sigmas)
+```
+
+
+```{r}
+plot(density(d2_test$VVScore))
+curve(dnorm(x,0,1),add=TRUE)
+```
+
+# Wilks
+
+
+```{r}
+Wilks_model <- quap(
+  alist(
+    Wilks ~ dnorm( mu , sigma ) ,
+    mu <- dnorm( 300 , 50 ) ,
+    sigma ~ dexp( 0.02 )
+    
+  ) , data=d2_train )
+precis(Wilks_model)
+```
+
+```{r}
+post <- extract.samples( Wilks_model )
+map_mu <- mean(post$mu)
+map_sigma <- mean(post$sigma)
+plot(density(d2_test$Wilks))
+curve(dnorm(x,map_mu,map_sigma),add=TRUE)
+```
+## Normalize to Z Score
+
+```{r}
+d2_test$Wilks_Z <- ( d2_test$Wilks - map_mu) / map_sigma
+plot(density(d2_test$Wilks_Z))
+curve(dnorm(x,0,1),add=TRUE)
+```
+
+# Plots Comparing Heteroskedasticity in Scores
+
+## Relative Bodyweight
+
+```{r}
+#par(mfrow=c(3,1))
+plot(Rel_Total~BodyweightKg,data=d2_test,pch=".",cex=0.001)
+ColouredDensities( d2_test$Rel_Total,d2_test$logBW)
+WanderingSchematic(17,d2_test$Rel_Total, d2_test$BodyweightKg , 
+                   "Relative Bodyweight Z Score vs Bodyweight", 
+                   "Relative Bodyweight Total")
+filled.contour(kde2d(d2_test$BodyweightKg,d2_test$Rel_Total))
+```
+
+## Log Log
+
+```{r}
+#par(mfrow=c(2,2))
+plot(LogLogScore~BodyweightKg,data=d2_test,pch=".",cex=0.001)
+ColouredDensities( d2_test$LogLogScore,d2_test$logBW)
+WanderingSchematic(17,d2_test$LogLogScore, d2_test$BodyweightKg , 
+                   "Log Log Z Score vs Bodyweight", "Allometric Score")
+filled.contour(kde2d(d2_test$BodyweightKg,d2_test$LogLogScore))
+```
+
+## Varying Variance
+
+```{r}
+#par(mfrow=c(2,2))
+plot(VVScore~BodyweightKg,data=d2_test,pch=".",cex=0.001)
+ColouredDensities( d2_test$VVScore,d2_test$logBW)
+WanderingSchematic(17,d2_test$VVScore, d2_test$BodyweightKg , 
+                   "Varying Variance Z Score vs Bodyweight", "VV Score")
+filled.contour(kde2d(d2_test$BodyweightKg,d2_test$VVScore))
+```
+
+## Wilks
+
+```{r}
+#par(mfrow=c(2,2))
+plot(Wilks_Z~BodyweightKg,data=d2_test,pch=".",cex=0.001)
+ColouredDensities( d2_test$Wilks_Z,d2_test$logBW)
+WanderingSchematic(17,d2_test$Wilks_Z, d2_test$BodyweightKg , 
+                   "Wilks Z Score vs Bodyweight", "Wilks")
+filled.contour(kde2d(d2_test$BodyweightKg,d2_test$Wilks_Z))
+```
+
+# Fair Score
+
+Question: what does a truly fair score look like?
+
+Simulation:
+
+```{r}
+n_sim <- nrow(d2_test)
+bw_sim <- rnorm(n_sim,100,15)
+score_sim <- rnorm(n_sim,0,1) #standard normal independent of bodyweight
+```
+
+```{r}
+#par(mfrow=c(2,2))
+plot(score_sim~bw_sim,pch=".",cex=0.001)
+ColouredDensities( score_sim,log(bw_sim))
+WanderingSchematic(17,score_sim, bw_sim , 
+                   "Fair Score vs Bodyweight", "Fair Score")
+filled.contour(kde2d(bw_sim,score_sim))
+```
+
+The most telling graph is probably the Wandering Schematic which is much better than any of the real scores used.
+
+Under the null hypothesis that score is independent of bodyweight, what is the distribution of mutual information and information quality ratio?
+
+```{r}
+sim_trials <- 100
+mutInfo <- c()
+joints <- c()
+
+for(i in 1:sim_trials){
+  #if(i%%floor(sim_trials/10)==0) print(i/sim_trials)
+  n_sim <- nrow(d2_test)
+  bw_sim <- rnorm(n_sim,mean(d2_test$BodyweightKg),sd(d2_test$BodyweightKg))
+  score_sim <- rnorm(n_sim,0,1)
+  bins <- floor(sqrt(n_sim))
+  joint <- kde2d(bw_sim,score_sim,n=95)$z
+  mutInfo <- append(mutInfo,mi.plugin(joint))
+  joints <- append(joints,entropy(joint))
+  
+}
+plot(density(mutInfo/joints))
+```
+
+```{r}
+quantile(mutInfo/joints)
+HPDI(mutInfo/joints)
+```
+
+
+Is the normality assumption in the simulation true?
+
+```{r}
+plot(density(d2_test$BodyweightKg,adjust=1))
+curve(dnorm(x,mean(d2_test$BodyweightKg),sd(d2_test$BodyweightKg)),add=TRUE)
+```
+
+## Score comparison using mutual information
+
+![According to wikipedia, dividing by the joint entropy is a normalized version of MI known as IQR]("./IQR.JPG")
+
+As shown by the simulation and a priori reasoning, if the score is fair then the MI or IQR should approach 0
+
+```{r}
+rel_joint <- kde2d(d2_test$BodyweightKg,d2_test$Rel_Total,n=95)$z
+LL_joint <- kde2d(d2_test$BodyweightKg,d2_test$LogLogScore,n=95)$z
+VV_joint <- kde2d(d2_test$BodyweightKg,d2_test$VVScore,n=95)$z
+Wilks_joint <- kde2d(d2_test$BodyweightKg,d2_test$Wilks_Z,n=95)$z
+mi.plugin(rel_joint) / entropy(rel_joint)
+mi.plugin(LL_joint) / entropy(LL_joint)
+mi.plugin(VV_joint) / entropy(VV_joint)
+mi.plugin(Wilks_joint) / entropy(Wilks_joint)
+HPDI(mutInfo/joints)
+```
+All scores are well above the 89% interval for the information quality ratio. It appears that Wilks is slightly better than Allometric or varying variance scores. Relative Bodyweight Score is of course horrendous.

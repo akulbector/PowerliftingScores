@@ -8,3 +8,9 @@ In R I compare relative bodyweight scores, Wilks, and 2 new scores whose paramet
 # Data
 
 https://www.kaggle.com/datasets/open-powerlifting/powerlifting-database
+
+# See Also
+
+http://www.strongur.io/can-we-do-better-than-wilks-absolutely/
+
+https://www.strongerbyscience.com/whos-the-most-impressive-powerlifter/

@@ -1,6 +1,6 @@
 ---
 title: "Powerlifting Strength Comparison"
-author: "Flash"
+author: "Akul"
 date: "12/05/2022"
 output: pdf_document
 ---
@@ -265,6 +265,8 @@ map_sigma <- mean(post$sigma)
 plot(density(d2_test$Wilks))
 curve(dnorm(x,map_mu,map_sigma),add=TRUE)
 ```
+
+
 ## Normalize to Z Score
 
 ```{r}
